@@ -1,0 +1,12 @@
+services:
+  - type: web
+    name: bedrockforge
+    runtime: docker
+    plan: free
+    envVars:
+      - key: PORT
+        value: 8080
+    disk:
+      name: data
+      mountPath: /app/data
+      sizeGB: 1

@@ -1,0 +1,243 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>BedrockForge</title>
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body { background: #1a1a2e; color: #eee; font-family: sans-serif; }
+.container { max-width: 800px; margin: 0 auto; padding: 20px; }
+h1 { color: #00d4ff; margin-bottom: 20px; }
+h2 { color: #00d4ff; margin-bottom: 10px; }
+.card { background: #16213e; border-radius: 8px; padding: 20px; margin-bottom: 20px; }
+input { width: 100%; padding: 10px; margin-bottom: 10px; background: #0f3460; border: 1px solid #00d4ff; color: #eee; border-radius: 4px; }
+button { padding: 10px 20px; background: #00d4ff; color: #1a1a2e; border: none; border-radius: 4px; cursor: pointer; font-weight: bold; margin-right: 10px; }
+button.danger { background: #ff4757; color: #fff; }
+button.secondary { background: #0f3460; color: #eee; }
+.status { padding: 8px 12px; border-radius: 4px; display: inline-block; margin-bottom: 10px; }
+.status.running { background: #2ed573; color: #1a1a2e; }
+.status.stopped { background: #ff4757; color: #fff; }
+#logs { background: #0a0a1a; padding: 15px; border-radius: 4px; font-family: monospace; font-size: 12px; height: 300px; overflow-y: auto; white-space: pre-wrap; word-break: break-all; }
+.hidden { display: none; }
+#auth-section { }
+#app-section { display: none; }
+.tabs { display: flex; margin-bottom: 20px; }
+.tab { padding: 10px 20px; cursor: pointer; border-bottom: 2px solid transparent; }
+.tab.active { border-bottom: 2px solid #00d4ff; color: #00d4ff; }
+#schematic-list { list-style: none; }
+#schematic-list li { padding: 8px; background: #0f3460; margin-bottom: 5px; border-radius: 4px; }
+.msg { padding: 10px; border-radius: 4px; margin-bottom: 10px; }
+.msg.error { background: #ff475733; border: 1px solid #ff4757; }
+.msg.success { background: #2ed57333; border: 1px solid #2ed573; }
+</style>
+</head>
+<body>
+<div class="container">
+  <h1>⛏ BedrockForge</h1>
+
+  <div id="auth-section">
+    <div class="card">
+      <div class="tabs">
+        <div class="tab active" onclick="showTab('login')">Login</div>
+        <div class="tab" onclick="showTab('register')">Register</div>
+      </div>
+      <div id="login-tab">
+        <h2>Login</h2>
+        <div id="login-msg"></div>
+        <input id="login-user" placeholder="Username">
+        <input id="login-pass" type="password" placeholder="Password">
+        <button onclick="login()">Login</button>
+      </div>
+      <div id="register-tab" class="hidden">
+        <h2>Register</h2>
+        <div id="register-msg"></div>
+        <input id="reg-user" placeholder="Username">
+        <input id="reg-pass" type="password" placeholder="Password">
+        <button onclick="register()">Register</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="app-section">
+    <div class="card">
+      <h2>Server Config</h2>
+      <input id="server-ip" placeholder="Server IP">
+      <input id="server-port" placeholder="Server Port (e.g. 19132)">
+      <button onclick="saveConfig()">Save Config</button>
+    </div>
+
+    <div class="card">
+      <h2>Schematics</h2>
+      <input type="file" id="schematic-file" accept=".json,.schematic,.litematic">
+      <button onclick="uploadSchematic()">Upload</button>
+      <div id="upload-msg"></div>
+      <ul id="schematic-list"></ul>
+    </div>
+
+    <div class="card">
+      <h2>Proxy</h2>
+      <div id="proxy-status" class="status stopped">Stopped</div><br>
+      <button id="start-btn" onclick="startProxy()">Start Proxy</button>
+      <button id="stop-btn" class="danger hidden" onclick="stopProxy()">Stop Proxy</button>
+      <button class="secondary" onclick="downloadLogs()">Download Logs</button>
+    </div>
+
+    <div class="card">
+      <h2>Live Logs</h2>
+      <div id="logs">No logs yet...</div>
+    </div>
+
+    <button class="danger" onclick="logout()" style="margin-top:10px">Logout</button>
+  </div>
+</div>
+
+<script>
+let token = localStorage.getItem('token') || '';
+let logInterval;
+
+function showTab(tab) {
+  document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+  document.getElementById('login-tab').classList.add('hidden');
+  document.getElementById('register-tab').classList.add('hidden');
+  document.getElementById(tab+'-tab').classList.remove('hidden');
+  event.target.classList.add('active');
+}
+
+function msg(id, text, type) {
+  const el = document.getElementById(id);
+  el.innerHTML = `<div class="msg ${type}">${text}</div>`;
+}
+
+async function api(path, method='GET', body=null, isForm=false) {
+  const opts = { method, headers: { 'Authorization': token } };
+  if (body && !isForm) { opts.headers['Content-Type'] = 'application/json'; opts.body = JSON.stringify(body); }
+  if (body && isForm) opts.body = body;
+  const res = await fetch('/api' + path, opts);
+  return res;
+}
+
+async function login() {
+  const username = document.getElementById('login-user').value;
+  const password = document.getElementById('login-pass').value;
+  const res = await api('/login', 'POST', {username, password});
+  if (!res.ok) { msg('login-msg', 'Invalid credentials', 'error'); return; }
+  const data = await res.json();
+  token = data.token;
+  localStorage.setItem('token', token);
+  showApp();
+}
+
+async function register() {
+  const username = document.getElementById('reg-user').value;
+  const password = document.getElementById('reg-pass').value;
+  const res = await api('/register', 'POST', {username, password});
+  if (!res.ok) { msg('register-msg', 'Username taken', 'error'); return; }
+  const data = await res.json();
+  token = data.token;
+  localStorage.setItem('token', token);
+  showApp();
+}
+
+function logout() {
+  token = '';
+  localStorage.removeItem('token');
+  clearInterval(logInterval);
+  document.getElementById('auth-section').style.display = '';
+  document.getElementById('app-section').style.display = 'none';
+}
+
+async function showApp() {
+  document.getElementById('auth-section').style.display = 'none';
+  document.getElementById('app-section').style.display = '';
+  loadConfig();
+  loadSchematics();
+  pollStatus();
+  logInterval = setInterval(loadLogs, 3000);
+}
+
+async function loadConfig() {
+  const res = await api('/config');
+  const data = await res.json();
+  document.getElementById('server-ip').value = data.server_ip || '';
+  document.getElementById('server-port').value = data.server_port || '';
+}
+
+async function saveConfig() {
+  const server_ip = document.getElementById('server-ip').value;
+  const server_port = document.getElementById('server-port').value;
+  await api('/config', 'POST', {server_ip, server_port});
+  alert('Config saved!');
+}
+
+async function uploadSchematic() {
+  const file = document.getElementById('schematic-file').files[0];
+  if (!file) return;
+  const form = new FormData();
+  form.append('file', file);
+  const res = await api('/upload', 'POST', form, true);
+  if (res.ok) { msg('upload-msg', 'Uploaded!', 'success'); loadSchematics(); }
+  else msg('upload-msg', 'Upload failed', 'error');
+}
+
+async function loadSchematics() {
+  const res = await api('/schematics');
+  const files = await res.json();
+  const list = document.getElementById('schematic-list');
+  list.innerHTML = '';
+  (files||[]).forEach(f => {
+    const li = document.createElement('li');
+    li.textContent = f;
+    list.appendChild(li);
+  });
+}
+
+async function startProxy() {
+  const res = await api('/proxy/start', 'POST');
+  if (!res.ok) { const t = await res.text(); alert(t); return; }
+  pollStatus();
+}
+
+async function stopProxy() {
+  await api('/proxy/stop', 'POST');
+  pollStatus();
+}
+
+async function pollStatus() {
+  const res = await api('/proxy/status');
+  const data = await res.json();
+  const statusEl = document.getElementById('proxy-status');
+  const startBtn = document.getElementById('start-btn');
+  const stopBtn = document.getElementById('stop-btn');
+  if (data.running) {
+    statusEl.textContent = 'Running';
+    statusEl.className = 'status running';
+    startBtn.classList.add('hidden');
+    stopBtn.classList.remove('hidden');
+  } else {
+    statusEl.textContent = 'Stopped';
+    statusEl.className = 'status stopped';
+    startBtn.classList.remove('hidden');
+    stopBtn.classList.add('hidden');
+  }
+  setTimeout(pollStatus, 5000);
+}
+
+async function loadLogs() {
+  const res = await api('/logs');
+  const data = await res.json();
+  const el = document.getElementById('logs');
+  el.textContent = data.logs || 'No logs yet...';
+  el.scrollTop = el.scrollHeight;
+}
+
+function downloadLogs() {
+  const a = document.createElement('a');
+  a.href = '/api/logs/download';
+  a.click();
+}
+
+if (token) showApp();
+</script>
+</body>
+</html>
