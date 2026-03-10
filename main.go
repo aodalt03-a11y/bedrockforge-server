@@ -48,6 +48,12 @@ return hex.EncodeToString(b)
 func initDB() {
 dbURL := os.Getenv("TURSO_URL")
 dbToken := os.Getenv("TURSO_TOKEN")
+if dbToken == "" {
+dbToken = "eyJhbGciOiJFZERTQSIsInR5cCI6IkpXVCJ9.eyJhIjoicnciLCJpYXQiOjE3NzMwOTkwNzUsImlkIjoiMDE5Y2Q0ZWUtNmMwMS03MDZjLTllNzctYTE3MjFiMTZiM2U0IiwicmlkIjoiZWFkNGVhZjUtYWFlMi00NmI2LTk1MTUtMjliNzYwZTFjNzk4In0.gkOin7Jqc_MRESJeWYPkv4pEZF3u-nQ_1do0y60Zi8Mh12rwuLc9LGICIrEpKVjV5KjAfBsc25c6aTPJuHEaCQ"
+}
+if dbURL == "" {
+dbURL = "libsql://bedrockforge-agentghost.aws-us-east-2.turso.io"
+}
 url := dbURL + "?authToken=" + dbToken
 log.Printf("Connecting to: %s", dbURL)
 var err error
