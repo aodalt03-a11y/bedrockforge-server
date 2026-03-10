@@ -2,6 +2,7 @@ package main
 
 import (
 "crypto/rand"
+"database/sql"
 "encoding/hex"
 "encoding/json"
 "fmt"
@@ -13,14 +14,16 @@ import (
 "path/filepath"
 "sync"
 "time"
+
+_ "github.com/tursodatabase/libsql-client-go/libsql"
 )
 
 type User struct {
-Username string `json:"username"`
-Password string `json:"password"`
-Token    string `json:"token"`
-ServerIP string `json:"server_ip"`
-ServerPort string `json:"server_port"`
+Username   string
+Password   string
+Token      string
+ServerIP   string
+ServerPort string
 }
 
 type ProxyInstance struct {
@@ -30,7 +33,7 @@ Running bool
 }
 
 var (
-users   = map[string]*User{}
+db      *sql.DB
 proxies = map[string]*ProxyInstance{}
 mu      sync.Mutex
 dataDir = "./data"
@@ -42,47 +45,56 @@ rand.Read(b)
 return hex.EncodeToString(b)
 }
 
-func saveUsers() {
-data, _ := json.Marshal(users)
-os.WriteFile(filepath.Join(dataDir, "users.json"), data, 0644)
-}
-
-func loadUsers() {
-data, err := os.ReadFile(filepath.Join(dataDir, "users.json"))
+func initDB() {
+dbURL := os.Getenv("TURSO_URL")
+dbToken := os.Getenv("TURSO_TOKEN")
+url := fmt.Sprintf("%s?authToken=%s", dbURL, dbToken)
+var err error
+db, err = sql.Open("libsql", url)
 if err != nil {
-return
+log.Fatal("failed to open db:", err)
 }
-json.Unmarshal(data, &users)
+_, err = db.Exec(`CREATE TABLE IF NOT EXISTS users (
+username TEXT PRIMARY KEY,
+password TEXT,
+token TEXT,
+server_ip TEXT DEFAULT '',
+server_port TEXT DEFAULT ''
+)`)
+if err != nil {
+log.Fatal("failed to create table:", err)
+}
+log.Println("Database connected")
 }
 
 func authMiddleware(r *http.Request) *User {
 token := r.Header.Get("Authorization")
-for _, u := range users {
-if u.Token == token {
-return u
-}
-}
+row := db.QueryRow("SELECT username, password, token, server_ip, server_port FROM users WHERE token = ?", token)
+u := &User{}
+if err := row.Scan(&u.Username, &u.Password, &u.Token, &u.ServerIP, &u.ServerPort); err != nil {
 return nil
+}
+return u
 }
 
 func main() {
 os.MkdirAll(dataDir, 0755)
-loadUsers()
+initDB()
 
 http.HandleFunc("/api/register", func(w http.ResponseWriter, r *http.Request) {
 if r.Method != "POST" { return }
 var req struct{ Username, Password string }
 json.NewDecoder(r.Body).Decode(&req)
-mu.Lock()
-defer mu.Unlock()
-if _, exists := users[req.Username]; exists {
-http.Error(w, "user exists", 400)
-return
+if req.Username == "" || req.Password == "" {
+http.Error(w, "missing fields", 400); return
 }
 token := randomToken()
-users[req.Username] = &User{Username: req.Username, Password: req.Password, Token: token}
+_, err := db.Exec("INSERT INTO users (username, password, token) VALUES (?, ?, ?)",
+req.Username, req.Password, token)
+if err != nil {
+http.Error(w, "user exists", 400); return
+}
 os.MkdirAll(filepath.Join(dataDir, req.Username, "schematics"), 0755)
-saveUsers()
 json.NewEncoder(w).Encode(map[string]string{"token": token})
 })
 
@@ -90,14 +102,12 @@ http.HandleFunc("/api/login", func(w http.ResponseWriter, r *http.Request) {
 if r.Method != "POST" { return }
 var req struct{ Username, Password string }
 json.NewDecoder(r.Body).Decode(&req)
-mu.Lock()
-defer mu.Unlock()
-u, exists := users[req.Username]
-if !exists || u.Password != req.Password {
-http.Error(w, "invalid credentials", 401)
-return
+row := db.QueryRow("SELECT token FROM users WHERE username = ? AND password = ?", req.Username, req.Password)
+var token string
+if err := row.Scan(&token); err != nil {
+http.Error(w, "invalid credentials", 401); return
 }
-json.NewEncoder(w).Encode(map[string]string{"token": u.Token})
+json.NewEncoder(w).Encode(map[string]string{"token": token})
 })
 
 http.HandleFunc("/api/config", func(w http.ResponseWriter, r *http.Request) {
@@ -106,11 +116,8 @@ if u == nil { http.Error(w, "unauthorized", 401); return }
 if r.Method == "POST" {
 var req struct{ ServerIP, ServerPort string }
 json.NewDecoder(r.Body).Decode(&req)
-mu.Lock()
-u.ServerIP = req.ServerIP
-u.ServerPort = req.ServerPort
-saveUsers()
-mu.Unlock()
+db.Exec("UPDATE users SET server_ip = ?, server_port = ? WHERE username = ?",
+req.ServerIP, req.ServerPort, u.Username)
 json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
 } else {
 json.NewEncoder(w).Encode(map[string]string{"server_ip": u.ServerIP, "server_port": u.ServerPort})
@@ -124,6 +131,7 @@ r.ParseMultipartForm(50 << 20)
 file, header, err := r.FormFile("file")
 if err != nil { http.Error(w, err.Error(), 400); return }
 defer file.Close()
+os.MkdirAll(filepath.Join(dataDir, u.Username, "schematics"), 0755)
 dst, _ := os.Create(filepath.Join(dataDir, u.Username, "schematics", header.Filename))
 defer dst.Close()
 io.Copy(dst, file)
@@ -147,15 +155,18 @@ if u == nil { http.Error(w, "unauthorized", 401); return }
 mu.Lock()
 defer mu.Unlock()
 if p, exists := proxies[u.Username]; exists && p.Running {
-http.Error(w, "proxy already running", 400)
-return
+http.Error(w, "proxy already running", 400); return
 }
-if u.ServerIP == "" { http.Error(w, "no server configured", 400); return }
+row := db.QueryRow("SELECT server_ip, server_port FROM users WHERE username = ?", u.Username)
+var ip, port string
+row.Scan(&ip, &port)
+if ip == "" { http.Error(w, "no server configured", 400); return }
 logPath := filepath.Join(dataDir, u.Username, "proxy.log")
+os.MkdirAll(filepath.Join(dataDir, u.Username), 0755)
 logFile, _ := os.Create(logPath)
 schematicDir := filepath.Join(dataDir, u.Username, "schematics")
 cmd := exec.Command("./mcproxy-linux-amd64",
-"--server", fmt.Sprintf("%s:%s", u.ServerIP, u.ServerPort),
+"--server", fmt.Sprintf("%s:%s", ip, port),
 "--schematic-dir", schematicDir,
 )
 cmd.Stdout = logFile
@@ -199,7 +210,6 @@ if u == nil { http.Error(w, "unauthorized", 401); return }
 logPath := filepath.Join(dataDir, u.Username, "proxy.log")
 data, err := os.ReadFile(logPath)
 if err != nil { json.NewEncoder(w).Encode(map[string]string{"logs": ""}); return }
-// last 5000 bytes
 if len(data) > 5000 { data = data[len(data)-5000:] }
 json.NewEncoder(w).Encode(map[string]string{"logs": string(data)})
 })
