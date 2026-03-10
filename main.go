@@ -48,7 +48,8 @@ return hex.EncodeToString(b)
 func initDB() {
 dbURL := os.Getenv("TURSO_URL")
 dbToken := os.Getenv("TURSO_TOKEN")
-url := fmt.Sprintf("%s?authToken=%s", dbURL, dbToken)
+url := dbURL + "?authToken=" + dbToken
+log.Printf("Connecting to: %s", dbURL)
 var err error
 db, err = sql.Open("libsql", url)
 if err != nil {
@@ -63,7 +64,8 @@ server_ip TEXT DEFAULT '',
 server_port TEXT DEFAULT ''
 )`)
 if err != nil {
-log.Fatalf("failed to create table:%v", err)
+log.Printf("TURSO_URL: %s", os.Getenv("TURSO_URL"))
+	log.Fatalf("failed to create table: %v", err)
 }
 log.Println("Database connected")
 }
