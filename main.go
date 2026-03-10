@@ -54,6 +54,7 @@ db, err = sql.Open("libsql", url)
 if err != nil {
 log.Fatal("failed to open db:", err)
 }
+db.SetMaxOpenConns(1)
 _, err = db.Exec(`CREATE TABLE IF NOT EXISTS users (
 username TEXT PRIMARY KEY,
 password TEXT,
@@ -62,7 +63,7 @@ server_ip TEXT DEFAULT '',
 server_port TEXT DEFAULT ''
 )`)
 if err != nil {
-log.Fatal("failed to create table:", err)
+log.Fatalf("failed to create table:%v", err)
 }
 log.Println("Database connected")
 }
